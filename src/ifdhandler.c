@@ -2010,7 +2010,13 @@ EXTERNAL RESPONSECODE IFDHICCPresence(DWORD Lun)
 		goto end;
 	}
 
-	switch (CcidSlots[reader_index].statusFromPolling)
+	status_from_polling_t statusFromPolling = CcidSlots[reader_index].statusFromPolling;
+	if (POINTMAN_TD1000 == ccid_descriptor->readerID && statusFromPolling == STATUS_FROM_POLLING_NONE) {
+		/* Pointman TD1000 GetSlotStatus is not functional.
+		 * If we haven't got an interrupt yet, assume not present. */
+		statusFromPolling = STATUS_FROM_POLLING_NOT_PRESENT;
+	}
+	switch (statusFromPolling)
 	{
 		case STATUS_FROM_POLLING_NONE: {
 			/* No status from polling, need to ask the CCID for the status. */

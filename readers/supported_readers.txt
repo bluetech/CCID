@@ -769,6 +769,9 @@
 # Planeta
 0x21AB:0x0010:Planeta RC700-NFC CCID
 
+# Pointman
+0x0483:0x3258:Pointman TD1000 RF Reader
+
 # Purism, SPC
 0x316D:0x4C4B:Purism, SPC Librem Key
 

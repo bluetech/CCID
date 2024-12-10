@@ -803,6 +803,16 @@ again:
 				usbDevice[reader_index].ccid.dwDefaultClock = dw2i(device_descriptor, 10);
 				usbDevice[reader_index].ccid.dwMaxDataRate = dw2i(device_descriptor, 23);
 				usbDevice[reader_index].ccid.bMaxSlotIndex = device_descriptor[4];
+				if (readerID == POINTMAN_TD1000) {
+					/* Claims to have 3 slots, but actually has only 1. */
+					if (usbDevice[reader_index].ccid.bMaxSlotIndex != 0) {
+						DEBUG_INFO2(
+							"Applied hack for Pointman TD1000 - setting bMaxSlotIndex to 0, was: %d",
+							usbDevice[reader_index].ccid.bMaxSlotIndex
+						);
+						usbDevice[reader_index].ccid.bMaxSlotIndex = 0;
+					}
+				}
 				usbDevice[reader_index].ccid.bMaxCCIDBusySlots = device_descriptor[53];
 				usbDevice[reader_index].ccid.bCurrentSlotIndex = 0;
 				usbDevice[reader_index].ccid.readTimeout = DEFAULT_COM_READ_TIMEOUT;

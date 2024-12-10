@@ -76,31 +76,13 @@ typedef enum {
 #define DEFAULT_COM_READ_TIMEOUT (3*1000)
 
 /* DWORD type formatting */
-#ifdef __APPLE__
-/* Apple defines DWORD as uint32_t */
-#define DWORD_X "%X"
-#define DWORD_D "%d"
-#else
 /* pcsc-lite defines DWORD as unsigned long */
 #define DWORD_X "%lX"
 #define DWORD_D "%ld"
-#endif
 
 /*
  * communication ports abstraction
  */
-#ifdef TWIN_SERIAL
-
-#define OpenPortByName OpenSerialByName
-#define OpenPort OpenSerial
-#define ClosePort CloseSerial
-#define ReadPort ReadSerial
-#define WritePort WriteSerial
-#define DisconnectPort DisconnectSerial
-#include "ccid_serial.h"
-
-#else
-
 #define OpenPortByName OpenUSBByName
 #define OpenPort OpenUSB
 #define ClosePort CloseUSB
@@ -108,6 +90,3 @@ typedef enum {
 #define WritePort WriteUSB
 #define DisconnectPort DisconnectUSB
 #include "ccid_usb.h"
-
-#endif
-

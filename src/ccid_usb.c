@@ -18,12 +18,11 @@
 */
 
 #define __CCID_USB__
+#define _GNU_SOURCE /* for secure_getenv(3) */
 
 #include <stdio.h>
 #include <string.h>
-# ifdef S_SPLINT_S
-# include <sys/types.h>
-# endif
+#include <errno.h>
 #include <libusb.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -40,7 +39,6 @@
 #include "utils.h"
 #include "parser.h"
 #include "ccid_ifdhandler.h"
-#include "sys_generic.h"
 
 
 /* write timeout
@@ -173,16 +171,7 @@ static struct _bogus_firmware Bogus_firmwares[] = {
 	{ 0x03F0, 0x0036, 0x0124 }, /* HP USB CCID Smartcard Keyboard */
 	{ 0x062D, 0x0001, 0x0102 }, /* THRC Smart Card Reader */
 	{ 0x04E6, 0x5291, 0x0112 }, /* SCM SCL010 Contactless Reader */
-
-	/* the firmware version is not correct since I do not have received a
-	 * working reader yet */
-#ifndef O2MICRO_OZ776_PATCH
-	{ 0x0b97, 0x7762, 0x0111 },	/* Oz776S */
-#endif
 };
-
-/* data rates supported by the secondary slots on the GemCore Pos Pro & SIM Pro */
-static unsigned int SerialCustomDataRates[] = { GEMPLUS_CUSTOM_DATA_RATES, 0 };
 
 /*****************************************************************************
  *
@@ -234,15 +223,9 @@ status_t OpenUSBByName(unsigned int reader_index, /*@null@*/ char *device)
 	unsigned int alias;
 	struct libusb_device_handle *dev_handle;
 	char infofile[FILENAME_MAX];
-#ifndef __APPLE__
 	unsigned int device_vendor, device_product;
 	unsigned int device_bus = 0;
 	unsigned int device_addr = 0;
-#else
-	/* 100 ms delay */
-	struct timespec sleep_time = { 0, 100 * 1000 * 1000 };
-	int count_libusb = 10;
-#endif
 	int interface_number = -1;
 	int i;
 	static int previous_reader_index = -1;
@@ -253,14 +236,9 @@ status_t OpenUSBByName(unsigned int reader_index, /*@null@*/ char *device)
 	bool claim_failed = false;
 	int return_value = STATUS_SUCCESS;
 	const char * hpDirPath;
-#ifdef USE_COMPOSITE_AS_MULTISLOT
-	/* use the first CCID interface on first call */
-	static int static_interface = -1;
-#endif
 
 	DEBUG_COMM3("Reader index: %X, Device: " LOG_STRING, reader_index, device);
 
-#ifndef __APPLE__
 	/* device name specified */
 	if (device)
 	{
@@ -310,7 +288,6 @@ status_t OpenUSBByName(unsigned int reader_index, /*@null@*/ char *device)
 			}
 		}
 	}
-#endif
 
 	/* is the reader_index already used? */
 	if (usbDevice[reader_index].dev_handle != NULL)
@@ -321,7 +298,7 @@ status_t OpenUSBByName(unsigned int reader_index, /*@null@*/ char *device)
 	}
 
 	/* Check if path override present in environment */
-	hpDirPath = SYS_GetEnv("PCSCLITE_HP_DROPDIR");
+	hpDirPath = secure_getenv("PCSCLITE_HP_DROPDIR");
 	if (NULL == hpDirPath)
 		hpDirPath = PCSCLITE_HP_DROPDIR;
 
@@ -383,9 +360,6 @@ status_t OpenUSBByName(unsigned int reader_index, /*@null@*/ char *device)
 		goto end1;
 	}
 
-#ifdef __APPLE__
-again_libusb:
-#endif
 	cnt = libusb_get_device_list(ctx, &devs);
 	if (cnt < 0)
 	{
@@ -404,16 +378,10 @@ again_libusb:
 		productID = strtoul(list_get_at(ifdProductID, alias), NULL, 0);
 		friendlyName = list_get_at(ifdFriendlyName, alias);
 
-#ifndef __APPLE__
 		/* the device was specified but is not the one we are trying to find */
 		if (device
 			&& (vendorID != device_vendor || productID != device_product))
 			continue;
-#else
-		/* Leopard puts the friendlyname in the device argument */
-		if (device && strcmp(device, friendlyName))
-			continue;
-#endif
 
 		/* for every device */
 		i = 0;
@@ -424,14 +392,12 @@ again_libusb:
 			uint8_t bus_number = libusb_get_bus_number(dev);
 			uint8_t device_address = libusb_get_device_address(dev);
 
-#ifndef __APPLE__
 			if ((device_bus || device_addr)
 				&& ((bus_number != device_bus)
 				|| (device_address != device_addr))) {
 				/* not the USB device we are looking for */
 				continue;
 			}
-#endif
 			DEBUG_COMM3("Try device: %d/%d", bus_number, device_address);
 
 			int r = libusb_get_device_descriptor(dev, &desc);
@@ -451,110 +417,7 @@ again_libusb:
 				int interface;
 				int num = 0;
 				const unsigned char *device_descriptor;
-				int readerID = (vendorID << 16) + productID;
 
-#ifdef USE_COMPOSITE_AS_MULTISLOT
-				/* use the first CCID interface on first call */
-				int max_interface_number = -1;
-				int num_CCID_interfaces = 1;
-
-				/*
-				 * We can't talk to the two CCID interfaces
-				 * at the same time (the reader enters a
-				 * dead lock). So we simulate a multi slot
-				 * reader. By default multi slot readers
-				 * can't use the slots at the same time. See
-				 * TAG_IFD_SLOT_THREAD_SAFE
-				 *
-				 * One side effect is that the two readers
-				 * are seen by pcscd as one reader so the
-				 * interface name is the same for the two.
-				 *
-	* So we have:
-	* 0: Gemalto Prox-DU [Prox-DU Contact_09A00795] (09A00795) 00 00
-	* 1: Gemalto Prox-DU [Prox-DU Contact_09A00795] (09A00795) 00 01
-	* instead of
-	* 0: Gemalto Prox-DU [Prox-DU Contact_09A00795] (09A00795) 00 00
-	* 1: Gemalto Prox-DU [Prox-DU Contactless_09A00795] (09A00795) 01 00
-				 */
-
-				/* simulate a composite device as when libudev is used */
-				switch (readerID)
-				{
-					/* For the HID Omnikey 5422 the interfaces are:
-					 * 0: OMNIKEY 5422CL Smartcard Reader
-					 * 1: OMNIKEY 5422 Smartcard Reader
-					 */
-					case HID_OMNIKEY_5422:
-					case ALCOR_LINK_AK9567:
-					case ALCOR_LINK_AK9572:
-					case ACS_WALLETMATE:
-					case ACS_ACR1251:
-					case ACS_ACR1252:
-					case ACS_ACR1252IMP:
-					case ACS_ACR1552:
-						max_interface_number = 1; /* 2 interfaces */
-						num_CCID_interfaces = 2;  /* 2 CCID interfaces */
-						break;
-
-					/* For the Gemalto Prox-DU/SU the interfaces are:
-					 * 0: Prox-DU HID (not used)
-					 * 1: Prox-DU Contactless (CCID)
-					 * 2: Prox-DU Contact (CCID)
-					 */
-					case GEMALTOPROXDU:
-					case GEMALTOPROXSU:
-						max_interface_number = 2; /* 3 interfaces */
-						num_CCID_interfaces = 2;  /* 2 CCID interfaces */
-						break;
-
-					case ACS_ACR1581:
-						max_interface_number = 2; /* 3 interfaces */
-						num_CCID_interfaces = 3;  /* 3 CCID interfaces */
-						break;
-
-					/* For the Feitian R502 the interfaces are:
-					 * 0: R502 Contactless Reader (CCID)
-					 * 1: R502 Contact Reader (CCID)
-					 * 2: R502 SAM1 Reader (CCID)
-					 * 3: R502 SAM2 Reader (CCID)
-					 */
-					case FEITIANR502DUAL:
-						max_interface_number = 3; /* 4 interfaces */
-						num_CCID_interfaces = 4;  /* 4 CCID interfaces */
-						break;
-
-					/* Kap-eCV: only the first interface is a CCID one
-					 * 0: CCID contactless
-					 * 1: HID
-					 * 2: CDC
-					 * We need to handle this case here even if
-					 * because we have a generic test for all Kapelse
-					 * readers (VENDOR_KAPELSE) later in the code
-					 */
-					case KAPELSE_KAPECV:
-						max_interface_number = 0;
-						num_CCID_interfaces = 1;
-						break;
-
-					/* Kap&Link2: only 3 first interfaces are CCID ones
-					 * 0: CCID contact
-					 * 1: CCID contactless
-					 * 2: CCID contactless
-					 * or, depending on user configuration:
-					 * 0: CCID contact
-					 * 1: CCID contactless
-					 * 2: CCID contactless
-					 * 3: CDC-ACM
-					 */
-					case KAPELSE_KAPLIN2:
-						max_interface_number = 2;
-						num_CCID_interfaces = 3;
-						break;
-				}
-
-				interface_number = static_interface;
-#endif
 				/* is it already opened? */
 				already_used = false;
 
@@ -583,30 +446,9 @@ again_libusb:
 						/* we reuse the same device
 						 * and the reader is multi-slot */
 						usbDevice[reader_index] = usbDevice[previous_reader_index];
-						/* The other slots of GemCore SIM Pro firmware
-						 * 1.0 do not have the same data rates.
-						 * Firmware 2.0 do not have this limitation */
-						if ((GEMCOREPOSPRO == readerID)
-							|| ((GEMCORESIMPRO == readerID)
-							&& (usbDevice[reader_index].ccid.IFD_bcdDevice < 0x0200)))
-						{
-							/* Allocate a memory buffer that will be
-							 * released in CloseUSB() */
-							void *ptr = malloc(sizeof SerialCustomDataRates);
-							if (ptr)
-							{
-								memcpy(ptr, SerialCustomDataRates,
-									sizeof SerialCustomDataRates);
-							}
-
-							usbDevice[reader_index].ccid.arrayOfSupportedDataRates = ptr;
-							usbDevice[reader_index].ccid.dwMaxDataRate = 125000;
-						}
 
 						*usbDevice[reader_index].nb_opened_slots += 1;
 						usbDevice[reader_index].ccid.bCurrentSlotIndex++;
-						usbDevice[reader_index].ccid.dwSlotStatus =
-							IFD_ICC_PRESENT;
 						DEBUG_INFO2("Opening slot: %d",
 							usbDevice[reader_index].ccid.bCurrentSlotIndex);
 
@@ -645,52 +487,11 @@ again:
 				r = libusb_get_active_config_descriptor(dev, &config_desc);
 				if (r < 0)
 				{
-#ifdef __APPLE__
-					/* Some early Gemalto Ezio CB+ readers have
-					 * bDeviceClass, bDeviceSubClass and bDeviceProtocol set
-					 * to 0xFF (proprietary) instead of 0x00.
-					 *
-					 * So on Mac OS X the reader configuration is not done
-					 * by the OS/kernel and we do it ourself.
-					 */
-					if ((0xFF == desc.bDeviceClass)
-						&& (0xFF == desc.bDeviceSubClass)
-						&& (0xFF == desc.bDeviceProtocol))
-					{
-						r = libusb_set_configuration(dev_handle, 1);
-						if (r < 0)
-						{
-							(void)libusb_close(dev_handle);
-							DEBUG_CRITICAL4("Can't set configuration on %d/%d: %s",
-									bus_number, device_address,
-									libusb_error_name(r));
-							continue;
-						}
-					}
-
-					/* recall */
-					r = libusb_get_active_config_descriptor(dev, &config_desc);
-					if (r < 0)
-					{
-#endif
 						(void)libusb_close(dev_handle);
 						DEBUG_CRITICAL4("Can't get config descriptor on %d/%d: %s",
 							bus_number, device_address, libusb_error_name(r));
 						continue;
-					}
-#ifdef __APPLE__
 				}
-#endif
-
-#ifdef USE_COMPOSITE_AS_MULTISLOT
-				if ((VENDOR_KAPELSE == GET_VENDOR(readerID))
-					&& (-1 == max_interface_number))
-				{
-					/* Kapelse: all interfaces are CCID ones */
-					num_CCID_interfaces = config_desc->bNumInterfaces;
-					max_interface_number = num_CCID_interfaces-1;
-				}
-#endif
 
 				usb_interface = get_ccid_usb_interface(config_desc, &num);
 				if (usb_interface == NULL)
@@ -758,19 +559,6 @@ again:
 					goto end2;
 				}
 
-#ifdef USE_COMPOSITE_AS_MULTISLOT
-				/* only if max_interface_number has a value set earlier */
-				if (max_interface_number >= 0)
-				{
-					/* use the next interface for the next "slot" */
-					static_interface = interface + 1;
-
-					/* reset for a next reader */
-					if (static_interface > max_interface_number)
-						static_interface = -1;
-				}
-#endif
-
 				/* Get Endpoints values*/
 				(void)get_end_points(usb_interface, &usbDevice[reader_index]);
 
@@ -787,9 +575,6 @@ again:
 				usbDevice[reader_index].disconnected = false;
 
 				/* CCID common information */
-#ifdef USE_COMPOSITE_AS_MULTISLOT
-				usbDevice[reader_index].ccid.num_interfaces = num_CCID_interfaces;
-#endif
 				usbDevice[reader_index].ccid.real_bSeq = 0;
 				usbDevice[reader_index].ccid.pbSeq = &usbDevice[reader_index].ccid.real_bSeq;
 				usbDevice[reader_index].ccid.readerID =
@@ -815,14 +600,9 @@ again:
 				}
 				usbDevice[reader_index].ccid.bInterfaceProtocol = usb_interface->altsetting->bInterfaceProtocol;
 				usbDevice[reader_index].ccid.bNumEndpoints = usb_interface->altsetting->bNumEndpoints;
-				usbDevice[reader_index].ccid.dwSlotStatus = IFD_ICC_PRESENT;
 				usbDevice[reader_index].ccid.bVoltageSupport = device_descriptor[5];
 				usbDevice[reader_index].ccid.sIFD_serial_number = NULL;
-				usbDevice[reader_index].ccid.gemalto_firmware_features = NULL;
 				usbDevice[reader_index].ccid.dwProtocols = dw2i(device_descriptor, 6);
-#ifdef ENABLE_ZLP
-				usbDevice[reader_index].ccid.zlp = false;
-#endif
 				if (desc.iSerialNumber)
 				{
 					unsigned char serial[128];
@@ -869,18 +649,6 @@ end:
 		/* free the libusb allocated list & devices */
 		libusb_free_device_list(devs, 1);
 
-#ifdef __APPLE__
-		/* give some time to libusb to detect the new USB devices on Mac OS X */
-		if (count_libusb > 0)
-		{
-			count_libusb--;
-			DEBUG_INFO2("Wait after libusb: %d", count_libusb);
-			nanosleep(&sleep_time, NULL);
-
-			goto again_libusb;
-		}
-#endif
-
 		/* free bundle list */
 		bundleRelease(&plist);
 
@@ -890,10 +658,6 @@ end:
 		if (claim_failed)
 			return STATUS_COMM_ERROR;
 		DEBUG_INFO1("Device not found?");
-
-#ifdef USE_COMPOSITE_AS_MULTISLOT
-		static_interface = -1;
-#endif
 
 		return STATUS_NO_SUCH_DEVICE;
 	}
@@ -937,18 +701,6 @@ status_t WriteUSB(unsigned int reader_index, unsigned int length,
 		DEBUG_COMM("Reader disconnected");
 		return STATUS_NO_SUCH_DEVICE;
 	}
-
-#ifdef ENABLE_ZLP
-	if (usbDevice[reader_index].ccid.zlp)
-	{ /* Zero Length Packet */
-		int dummy_length;
-
-		/* try to read a ZLP so transfer length = 0
-		 * timeout of 10 ms */
-		(void)libusb_bulk_transfer(usbDevice[reader_index].dev_handle,
-			usbDevice[reader_index].bulk_in, NULL, 0, &dummy_length, 10);
-	}
-#endif
 
 	DEBUG_XXD(debug_header, buffer, length);
 
@@ -1011,11 +763,7 @@ read_again:
 			time_t timeout_sec = usbDevice[reader_index].ccid.readTimeout  / 1000;
 			long timeout_msec = usbDevice[reader_index].ccid.readTimeout - timeout_sec * 1000;
 
-#ifdef HAVE_PTHREAD_CONDATTR_SETCLOCK
 			clock_gettime(CLOCK_MONOTONIC, &timeout);
-#else
-			clock_gettime(CLOCK_REALTIME, &timeout);
-#endif
 			timeout.tv_sec += timeout_sec;
 			timeout.tv_nsec += timeout_msec * 1000 * 1000;
 			if (timeout.tv_nsec > 1000 * 1000 * 1000)
@@ -1167,9 +915,6 @@ status_t CloseUSB(unsigned int reader_index)
 
 		pthread_mutex_destroy(&usbDevice[reader_index].polling_transfer_mutex);
 
-		if (usbDevice[reader_index].ccid.gemalto_firmware_features)
-			free(usbDevice[reader_index].ccid.gemalto_firmware_features);
-
 		if (usbDevice[reader_index].ccid.sIFD_serial_number)
 			free(usbDevice[reader_index].ccid.sIFD_serial_number);
 
@@ -1235,10 +980,6 @@ _ccid_descriptor *get_ccid_descriptor(unsigned int reader_index)
  ****************************************************************************/
 const unsigned char *get_ccid_device_descriptor(const struct libusb_interface *usb_interface)
 {
-#ifdef O2MICRO_OZ776_PATCH
-	uint8_t last_endpoint;
-#endif
-
 	if (0 == usb_interface->num_altsetting) {
 		/* No interface descriptor available. */
 		return NULL;
@@ -1257,19 +998,8 @@ const unsigned char *get_ccid_device_descriptor(const struct libusb_interface *u
 		return NULL;
 	}
 
-#ifdef O2MICRO_OZ776_PATCH
-	/* Some devices, such as the Oz776, Reiner SCT and bludrive II
-	 * report the device descriptor at the end of the endpoint
-	 * descriptors; to support those, look for it at the end as well.
-	 */
-	last_endpoint = usb_interface->altsetting->bNumEndpoints-1;
-	if (usb_interface->altsetting->endpoint
-		&& usb_interface->altsetting->endpoint[last_endpoint].extra_length == 54)
-		return usb_interface->altsetting->endpoint[last_endpoint].extra;
-#else
 	DEBUG_CRITICAL2("Extra field has a wrong length: %d",
 		usb_interface->altsetting->extra_length);
-#endif
 
 	return NULL;
 } /* get_ccid_device_descriptor */
@@ -1918,11 +1648,7 @@ static int Multi_InterruptRead(int reader_index, int timeout /* in ms */)
 	interrupt_mask = 0x02 << (2 * (usbDevice[reader_index].ccid.bCurrentSlotIndex % 4));
 
 	/* Wait until the condition is signaled or a timeout occurs */
-#ifdef HAVE_PTHREAD_CONDATTR_SETCLOCK
 	clock_gettime(CLOCK_MONOTONIC, &cond_wait_until);
-#else
-	clock_gettime(CLOCK_REALTIME, &cond_wait_until);
-#endif
 	cond_wait_until.tv_sec += timeout / 1000;
 	cond_wait_until.tv_nsec += 1000000 * (timeout % 1000);
 
@@ -2102,16 +1828,12 @@ static struct usbDevice_MultiSlot_Extension *Multi_CreateFirstSlot(int reader_in
 
 	/* Create mutex and condition object for the interrupt polling */
 	pthread_mutex_init(&msExt->mutex, NULL);
-#ifdef HAVE_PTHREAD_CONDATTR_SETCLOCK
 	pthread_condattr_t condattr;
 
 	pthread_condattr_init(&condattr);
 	pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC);
 	pthread_cond_init(&msExt->condition, &condattr);
 	pthread_condattr_destroy(&condattr);
-#else
-	pthread_cond_init(&msExt->condition, NULL);
-#endif
 
 	/* concurrent USB read */
 	concurrent = calloc(usbDevice[reader_index].ccid.bMaxSlotIndex +1,
@@ -2126,14 +1848,10 @@ static struct usbDevice_MultiSlot_Extension *Multi_CreateFirstSlot(int reader_in
 	{
 		/* Create mutex and condition object for the concurrent read */
 		pthread_mutex_init(&concurrent[slot].mutex, NULL);
-#ifdef HAVE_PTHREAD_CONDATTR_SETCLOCK
 		pthread_condattr_init(&condattr);
 		pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC);
 		pthread_cond_init(&concurrent[slot].condition, &condattr);
 		pthread_condattr_destroy(&condattr);
-#else
-		pthread_cond_init(&concurrent[slot].condition, NULL);
-#endif
 	}
 	msExt->concurrent = concurrent;
 

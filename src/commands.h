@@ -61,6 +61,3 @@ RESPONSECODE CCID_Receive(unsigned int reader_index,
 
 RESPONSECODE SetParameters(unsigned int reader_index, char protocol,
 	unsigned int length, unsigned char buffer[]);
-
-int isCharLevel(int reader_index);
-

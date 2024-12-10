@@ -18,6 +18,7 @@
 */
 
 #include <config.h>
+#define _GNU_SOURCE /* for secure_getenv(3) */
 
 #include <stdio.h>
 #include <string.h>
@@ -40,7 +41,6 @@
 #include "towitoko/pps.h"
 #include "parser.h"
 #include "strlcpycat.h"
-#include "sys_generic.h"
 
 #include <pthread.h>
 
@@ -181,15 +181,6 @@ static RESPONSECODE CreateChannelByNameOrChannel(DWORD Lun,
 			DEBUG_CRITICAL("failed");
 			return_value = IFD_COMMUNICATION_ERROR;
 		}
-		else
-		{
-			/* Maybe we have a special treatment for this reader */
-			return_value = ccid_open_hack_post(reader_index);
-			if (return_value != IFD_SUCCESS)
-			{
-				DEBUG_CRITICAL("failed");
-			}
-		}
 
 		/* set back the old timeout */
 		ccid_descriptor->readTimeout = oldReadTimeout;
@@ -283,7 +274,6 @@ EXTERNAL RESPONSECODE IFDHCloseChannel(DWORD Lun)
 } /* IFDHCloseChannel */
 
 
-#if !defined(TWIN_SERIAL)
 static RESPONSECODE IFDHPolling(DWORD Lun, int timeout)
 {
 	int reader_index;
@@ -299,29 +289,6 @@ static RESPONSECODE IFDHPolling(DWORD Lun, int timeout)
 	return InterruptRead(reader_index, timeout);
 }
 
-/* on an ICCD device the card is always inserted
- * so no card movement will ever happen: just do nothing */
-static RESPONSECODE IFDHSleep(DWORD Lun, int timeout)
-{
-	int reader_index;
-
-	if (-1 == (reader_index = LunToReaderIndex(Lun)))
-		return IFD_COMMUNICATION_ERROR;
-
-	DEBUG_INFO4(LOG_STRING " (lun: " DWORD_X ") %d ms",
-		CcidSlots[reader_index].readerName, Lun, timeout);
-
-	/* just sleep for 5 seconds since the polling thread is NOT killable
-	 * so pcscd event thread must loop to exit cleanly
-	 *
-	 * Once the driver (libusb in fact) will support
-	 * TAG_IFD_POLLING_THREAD_KILLABLE then we could use a much longer delay
-	 * and be killed before pcscd exits
-	 */
-	(void)usleep(timeout * 1000);
-	return IFD_SUCCESS;
-}
-
 static RESPONSECODE IFDHStopPolling(DWORD Lun)
 {
 	int reader_index;
@@ -335,7 +302,6 @@ static RESPONSECODE IFDHStopPolling(DWORD Lun)
 	(void)InterruptStop(reader_index);
 	return IFD_SUCCESS;
 }
-#endif
 
 
 EXTERNAL RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag,
@@ -425,11 +391,7 @@ EXTERNAL RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag,
 			if (*Length >= 1)
 			{
 				*Length = 1;
-#ifdef __APPLE__
-				*Value = 0; /* Apple pcscd is bogus (rdar://problem/5697388) */
-#else
 				*Value = 1; /* Can talk to multiple readers at the same time */
-#endif
 			}
 			else
 				return_value = IFD_ERROR_INSUFFICIENT_BUFFER;
@@ -439,13 +401,7 @@ EXTERNAL RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag,
 			if (*Length >= 1)
 			{
 				*Length = 1;
-#ifdef USE_COMPOSITE_AS_MULTISLOT
-				/* On MacOS X we can simulate a composite device with 2
-				 * CCID interfaces by a multi-slot reader */
-				*Value = get_ccid_descriptor(reader_index) -> num_interfaces;
-#else
 				*Value = 1 + get_ccid_descriptor(reader_index) -> bMaxSlotIndex;
-#endif
 				DEBUG_INFO2("Reader supports %d slot(s)", *Value);
 			}
 			else
@@ -502,7 +458,6 @@ EXTERNAL RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag,
 				*(uint32_t *)Value = get_ccid_descriptor(reader_index) -> dwMaxCCIDMessageLength -10;
 			break;
 
-#if !defined(TWIN_SERIAL)
 		case TAG_IFD_POLLING_THREAD_WITH_TIMEOUT:
 			{
 				_ccid_descriptor *ccid_desc;
@@ -521,32 +476,13 @@ EXTERNAL RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag,
 					if (Value)
 						*(void **)Value = IFDHPolling;
 				}
-
-				if ((PROTOCOL_ICCD_A == ccid_desc->bInterfaceProtocol)
-					|| (PROTOCOL_ICCD_B == ccid_desc->bInterfaceProtocol))
-				{
-					*Length = sizeof(void *);
-					if (Value)
-						*(void **)Value = IFDHSleep;
-				}
 			}
 			break;
 
 		case TAG_IFD_POLLING_THREAD_KILLABLE:
 			{
-				_ccid_descriptor *ccid_desc;
-
 				/* default value: not supported */
 				*Length = 0;
-
-				ccid_desc = get_ccid_descriptor(reader_index);
-				if ((PROTOCOL_ICCD_A == ccid_desc->bInterfaceProtocol)
-					|| (PROTOCOL_ICCD_B == ccid_desc->bInterfaceProtocol))
-				{
-					*Length = 1;	/* 1 char */
-					if (Value)
-						*Value = 1;	/* TRUE */
-				}
 			}
 			break;
 
@@ -569,14 +505,11 @@ EXTERNAL RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag,
 				}
 			}
 			break;
-#endif
 
-#ifdef TAG_IFD_DEVICE_REMOVED
 		case TAG_IFD_DEVICE_REMOVED:
 			if (Value && (1 == *Length))
 				Value[0] = 1;
 			break;
-#endif
 
 		case SCARD_ATTR_VENDOR_IFD_SERIAL_NO:
 			{
@@ -596,7 +529,6 @@ EXTERNAL RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag,
 			}
 			break;
 
-#if !defined(TWIN_SERIAL)
 		case SCARD_ATTR_CHANNEL_ID:
 			{
 				*Length = sizeof(uint32_t);
@@ -607,7 +539,6 @@ EXTERNAL RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag,
 				}
 			}
 			break;
-#endif
 
 		default:
 			return_value = IFD_ERROR_TAG;
@@ -651,12 +582,10 @@ EXTERNAL RESPONSECODE IFDHSetCapabilities(DWORD Lun, DWORD Tag,
 
 	switch (Tag)
 	{
-#ifdef TAG_IFD_DEVICE_REMOVED
 		case TAG_IFD_DEVICE_REMOVED:
 			if ((1 == Length) && (Value != NULL) && (Value[0] != 0))
 				DisconnectPort(reader_index);
 			break;
-#endif
 
 		default:
 			return_value = IFD_ERROR_TAG;
@@ -929,18 +858,6 @@ EXTERNAL RESPONSECODE IFDHSetProtocolParameters(DWORD Lun, DWORD Protocol,
 		 * or a TA1/PPS1 is present */
 		if (((pps[1] & 0x0F) != default_protocol) || (PPS_HAS_PPS1(pps)))
 		{
-#ifdef O2MICRO_OZ776_PATCH
-			if ((OZ776 == ccid_desc->readerID)
-				|| (OZ776_7772 == ccid_desc->readerID))
-			{
-				/* convert from ATR_PROTOCOL_TYPE_T? to SCARD_PROTOCOL_T? */
-				Protocol = default_protocol +
-					(SCARD_PROTOCOL_T0 - ATR_PROTOCOL_TYPE_T0);
-				DEBUG_INFO2("PPS not supported on O2Micro readers. Using T=" DWORD_D,
-					Protocol - SCARD_PROTOCOL_T0);
-			}
-			else
-#endif
 			if (PPS_Exchange(reader_index, pps, &len, &pps[2]) != PPS_OK)
 			{
 				DEBUG_INFO1("PPS_Exchange Failed");
@@ -1046,27 +963,7 @@ end:
 			ret = SetParameters(reader_index, 1, sizeof(param), param);
 			if (IFD_SUCCESS != ret)
 			{
-				if (ALCORMICRO_AU9540 == ccid_desc -> readerID)
-				{
-					/* Set Parameters failed
-					 * reset the card and continue without Set Parameters */
-
-					UCHAR atr2[MAX_ATR_SIZE];
-					DWORD atr2length;
-					RESPONSECODE ret2;
-
-					/* 1st (cold?) reset */
-					ret2 = IFDHPowerICC(Lun, IFD_RESET, atr2, &atr2length);
-					if (IFD_SUCCESS != ret2)
-						return ret;
-
-					/* hot reset */
-					ret2 = IFDHPowerICC(Lun, IFD_RESET, atr2, &atr2length);
-					if (IFD_SUCCESS != ret2)
-						return ret;
-				}
-				else
-					return ret;
+				return ret;
 			}
 		}
 	}
@@ -1115,32 +1012,6 @@ end:
 			if (IFD_SUCCESS != ret)
 				return ret;
 		}
-	}
-
-	/* set IFSC & IFSD in T=1 */
-	if ((SCARD_PROTOCOL_T1 == Protocol)
-		&& (CCID_CLASS_TPDU == (ccid_desc->dwFeatures & CCID_CLASS_EXCHANGE_MASK)))
-	{
-		t1_state_t *t1 = &(ccid_slot -> t1);
-		int i, ifsc;
-
-		ifsc = get_IFSC(&atr, &i);
-		if (ifsc > 0)
-		{
-			DEBUG_COMM3("IFSC (TA%d) present: %d", i, ifsc);
-			(void)t1_set_param(t1, IFD_PROTOCOL_T1_IFSC, ifsc);
-		}
-
-		/* IFSD not negotiated by the reader? */
-		if (! (ccid_desc->dwFeatures & CCID_CLASS_AUTO_IFSD))
-		{
-			DEBUG_COMM2("Negotiate IFSD at %d", ccid_desc -> dwMaxIFSD);
-			if (t1_negotiate_ifsd(t1, 0, ccid_desc -> dwMaxIFSD) < 0)
-				return IFD_COMMUNICATION_ERROR;
-		}
-		(void)t1_set_param(t1, IFD_PROTOCOL_T1_IFSD, ccid_desc -> dwMaxIFSD);
-
-		DEBUG_COMM3("T=1: IFSC=%d, IFSD=%d", t1->ifsc, t1->ifsd);
 	}
 
 	/* store used protocol for use by the secure commands (verify/change PIN) */
@@ -1193,9 +1064,7 @@ EXTERNAL RESPONSECODE IFDHPowerICC(DWORD Lun, DWORD Action,
 	RESPONSECODE return_value = IFD_SUCCESS;
 	unsigned char pcbuffer[MAX_ATR_SIZE];
 	int reader_index;
-#ifndef NO_LOG
 	const char *actions[] = { "PowerUp", "PowerDown", "Reset" };
-#endif
 	unsigned int oldReadTimeout;
 	_ccid_descriptor *ccid_descriptor;
 
@@ -1239,19 +1108,6 @@ EXTERNAL RESPONSECODE IFDHPowerICC(DWORD Lun, DWORD Action,
 			ccid_descriptor = get_ccid_descriptor(reader_index);
 			oldReadTimeout = ccid_descriptor->readTimeout;
 
-			/* The German eID card is bogus and need to be powered off
-			 * before a power on */
-			if (KOBIL_IDTOKEN == ccid_descriptor -> readerID)
-			{
-				/* send the command */
-				if (IFD_SUCCESS != CmdPowerOff(reader_index))
-				{
-					DEBUG_CRITICAL("PowerDown failed");
-					return_value = IFD_ERROR_POWER_ACTION;
-					goto end;
-				}
-			}
-
 			/* use a very long timeout since the card can use up to
 			 * (9600+12)*33 ETU in total
 			 * 12 ETU per byte
@@ -1271,11 +1127,6 @@ EXTERNAL RESPONSECODE IFDHPowerICC(DWORD Lun, DWORD Action,
 
 			if (return_value != IFD_SUCCESS)
 			{
-				/* used by GemCore SIM PRO: no card is present */
-				if (GEMCORESIMPRO == ccid_descriptor -> readerID)
-					get_ccid_descriptor(reader_index)->dwSlotStatus
-						= IFD_ICC_NOT_PRESENT;
-
 				DEBUG_CRITICAL("PowerUp failed");
 				return_value = IFD_ERROR_POWER_ACTION;
 				goto end;
@@ -1360,57 +1211,6 @@ EXTERNAL RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci,
 	DEBUG_INFO3(LOG_STRING " (lun: " DWORD_X ")", CcidSlots[reader_index].readerName,
 		Lun);
 
-	/* special APDU for the Kobil IDToken (CLASS = 0xFF) */
-	if (KOBIL_IDTOKEN == ccid_descriptor -> readerID)
-	{
-		char manufacturer[] = {0xFF, 0x9A, 0x01, 0x01, 0x00};
-		char product_name[] = {0xFF, 0x9A, 0x01, 0x03, 0x00};
-		char firmware_version[] = {0xFF, 0x9A, 0x01, 0x06, 0x00};
-		char driver_version[] = {0xFF, 0x9A, 0x01, 0x07, 0x00};
-
-		if ((sizeof manufacturer == TxLength)
-			&& (memcmp(TxBuffer, manufacturer, sizeof manufacturer) == 0))
-		{
-			DEBUG_INFO1("IDToken: Manufacturer command");
-			memcpy(RxBuffer, "KOBIL systems\220\0", 15);
-			*RxLength = 15;
-			return IFD_SUCCESS;
-		}
-
-		if ((sizeof product_name == TxLength)
-			&& (memcmp(TxBuffer, product_name, sizeof product_name) == 0))
-		{
-			DEBUG_INFO1("IDToken: Product name command");
-			memcpy(RxBuffer, "IDToken\220\0", 9);
-			*RxLength = 9;
-			return IFD_SUCCESS;
-		}
-
-		if ((sizeof firmware_version == TxLength)
-			&& (memcmp(TxBuffer, firmware_version, sizeof firmware_version) == 0))
-		{
-			int IFD_bcdDevice = ccid_descriptor -> IFD_bcdDevice;
-
-			DEBUG_INFO1("IDToken: Firmware version command");
-			*RxLength = sprintf((char *)RxBuffer, "%X.%02X",
-				IFD_bcdDevice >> 8, IFD_bcdDevice & 0xFF);
-			RxBuffer[(*RxLength)++] = 0x90;
-			RxBuffer[(*RxLength)++] = 0x00;
-			return IFD_SUCCESS;
-		}
-
-		if ((sizeof driver_version == TxLength)
-			&& (memcmp(TxBuffer, driver_version, sizeof driver_version) == 0))
-		{
-			DEBUG_INFO1("IDToken: Driver version command");
-#define DRIVER_VERSION "2012.2.7\220\0"
-			memcpy(RxBuffer, DRIVER_VERSION, sizeof DRIVER_VERSION -1);
-			*RxLength = sizeof DRIVER_VERSION -1;
-			return IFD_SUCCESS;
-		}
-
-	}
-
 	/* Pseudo-APDU as defined in PC/SC v2 part 10 supplement document
 	 * CLA=0xFF, INS=0xC2, P1=0x01 */
 	if (0 == memcmp(TxBuffer, "\xFF\xC2\x01", 3))
@@ -1475,30 +1275,6 @@ EXTERNAL RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode,
 	if (IOCTL_SMARTCARD_VENDOR_IFD_EXCHANGE == dwControlCode)
 	{
 		bool allowed = (DriverOptions & DRIVER_OPTION_CCID_EXCHANGE_AUTHORIZED);
-		int readerID = ccid_descriptor -> readerID;
-
-		if (VENDOR_GEMALTO == GET_VENDOR(readerID))
-		{
-			unsigned char switch_interface[] = { 0x52, 0xF8, 0x04, 0x01, 0x00 };
-
-			/* get firmware version escape command */
-			if ((1 == TxLength) && (0x02 == TxBuffer[0]))
-				allowed = true;
-
-			/* switch interface escape command on the GemProx DU
-			 * the next byte in the command is the interface:
-			 * 0x01 switch to contactless interface
-			 * 0x02 switch to contact interface
-			 */
-			if ((GEMALTOPROXDU == readerID)
-				&& (6 == TxLength)
-				&& (0 == memcmp(TxBuffer, switch_interface, sizeof(switch_interface))))
-				allowed = true;
-		}
-
-		/* allow APDU exchange with this reader without a card in the field */
-		if (HID_OMNIKEY_5427CK == readerID)
-			allowed = true;
 
 		if (!allowed)
 		{
@@ -1527,7 +1303,6 @@ EXTERNAL RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode,
 	{
 		unsigned int iBytesReturned = 0;
 		PCSC_TLV_STRUCTURE *pcsc_tlv = (PCSC_TLV_STRUCTURE *)RxBuffer;
-		int readerID = ccid_descriptor -> readerID;
 
 		/* we need room for up to six records */
 		if (RxLength < 6 * sizeof(PCSC_TLV_STRUCTURE))
@@ -1568,18 +1343,6 @@ EXTERNAL RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode,
 			iBytesReturned += sizeof(PCSC_TLV_STRUCTURE);
 		}
 
-		if ((KOBIL_TRIBANK == readerID)
-			|| (KOBIL_MIDENTITY_VISUAL == readerID))
-		{
-			pcsc_tlv -> tag = FEATURE_MCT_READER_DIRECT;
-			pcsc_tlv -> length = 0x04; /* always 0x04 */
-			set_U32(&pcsc_tlv -> value,
-				htonl(IOCTL_FEATURE_MCT_READER_DIRECT));
-
-			pcsc_tlv++;
-			iBytesReturned += sizeof(PCSC_TLV_STRUCTURE);
-		}
-
 		pcsc_tlv -> tag = FEATURE_GET_TLV_PROPERTIES;
 		pcsc_tlv -> length = 0x04; /* always 0x04 */
 		set_U32(&pcsc_tlv -> value,
@@ -1615,21 +1378,7 @@ EXTERNAL RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode,
 		/* Only give the LCD size for now */
 		set_U16(&caps -> wLcdLayout, ccid_descriptor -> wLcdLayout);
 
-		/* Hardcoded special reader cases */
-		switch (ccid_descriptor->readerID)
-		{
-			case GEMPCPINPAD:
-			case VEGAALPHA:
-			case CHERRYST2000:
-				validation = 0x02; /* Validation key pressed */
-				break;
-			default:
-				validation = 0x07; /* Default */
-		}
-
-		/* Gemalto readers providing firmware features */
-		if (ccid_descriptor -> gemalto_firmware_features)
-			validation = ccid_descriptor -> gemalto_firmware_features -> bEntryValidationCondition;
+		validation = 0x07; /* Default */
 
 		caps -> bEntryValidationCondition = validation;
 		caps -> bTimeOut2 = 0x00; /* We do not distinguish bTimeOut from TimeOut2 */
@@ -1675,116 +1424,6 @@ EXTERNAL RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode,
 		/* IFD does not distinguish bTimeOut from bTimeOut2 */
 		RxBuffer[p++] = 0x00;
 
-		/* sFirmwareID */
-		if (VENDOR_GEMALTO == GET_VENDOR(ccid_descriptor -> readerID))
-		{
-			unsigned char firmware[256];
-			const unsigned char cmd[] = { 0x02 };
-			RESPONSECODE ret;
-			unsigned int len;
-
-			len = sizeof(firmware);
-			ret = CmdEscape(reader_index, cmd, sizeof(cmd), firmware, &len, 0);
-
-			if (IFD_SUCCESS == ret)
-			{
-				RxBuffer[p++] = PCSCv2_PART10_PROPERTY_sFirmwareID;
-				RxBuffer[p++] = len;
-				memcpy(&RxBuffer[p], firmware, len);
-				p += len;
-			}
-		}
-
-		/* Gemalto PC Pinpad V1 */
-		if (((GEMPCPINPAD == ccid_descriptor -> readerID)
-			&& (0x0100 == ccid_descriptor -> IFD_bcdDevice))
-			/* Covadis Véga-Alpha */
-			|| (VEGAALPHA == ccid_descriptor->readerID))
-		{
-			/* bMinPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMinPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 4;	/* min PIN size */
-
-			/* bMaxPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMaxPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 8;	/* max PIN size */
-
-			/* bEntryValidationCondition */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bEntryValidationCondition;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 0x02;	/* validation key pressed */
-		}
-
-		/* Cherry GmbH SmartTerminal ST-2xxx */
-		if (CHERRYST2000 == ccid_descriptor -> readerID)
-		{
-			/* bMinPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMinPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 0;	/* min PIN size */
-
-			/* bMaxPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMaxPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 25;	/* max PIN size */
-
-			/* bEntryValidationCondition */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bEntryValidationCondition;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 0x02;	/* validation key pressed */
-		}
-
-		/* Cherry KC 1000 SC */
-		if (CHERRY_KC1000SC == ccid_descriptor -> readerID)
-		{
-			/* bMinPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMinPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 0;	/* min PIN size */
-
-			/* bMaxPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMaxPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 32;	/* max PIN size */
-		}
-
-		/* Omnikey 3821 */
-		if (HID_OMNIKEY_3821 == ccid_descriptor -> readerID)
-		{
-			/* bMinPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMinPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 1;	/* min PIN size */
-
-			/* bMaxPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMaxPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = 31;	/* max PIN size */
-		}
-
-		/* Gemalto readers providing firmware features */
-		if (ccid_descriptor -> gemalto_firmware_features)
-		{
-			struct GEMALTO_FIRMWARE_FEATURES *features = ccid_descriptor -> gemalto_firmware_features;
-
-			/* bMinPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMinPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = features -> MinimumPINSize;	/* min PIN size */
-
-			/* bMaxPINSize */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bMaxPINSize;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = features -> MaximumPINSize;	/* max PIN size */
-
-			/* bEntryValidationCondition */
-			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bEntryValidationCondition;
-			RxBuffer[p++] = 1;	/* length */
-			RxBuffer[p++] = features -> bEntryValidationCondition;	/* validation key pressed */
-		}
-
 		/* bPPDUSupport */
 		RxBuffer[p++] = PCSCv2_PART10_PROPERTY_bPPDUSupport;
 		RxBuffer[p++] = 1;	/* length */
@@ -1814,11 +1453,6 @@ EXTERNAL RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode,
 		/* dwMaxAPDUDataSize */
 		{
 			int MaxAPDUDataSize = 0; /* short APDU only by default */
-
-			/* reader is TPDU or extended APDU */
-			if ((ccid_descriptor -> dwFeatures & CCID_CLASS_EXTENDED_APDU)
-				|| (ccid_descriptor -> dwFeatures & CCID_CLASS_TPDU))
-				MaxAPDUDataSize = 0x10000;
 
 			RxBuffer[p++] = PCSCv2_PART10_PROPERTY_dwMaxAPDUDataSize;
 			RxBuffer[p++] = 4;	/* length */
@@ -1886,72 +1520,6 @@ EXTERNAL RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode,
 		}
 	}
 
-#ifdef ENABLE_MULTIPLE_ENABLED_PROFILES
-	/* Multiple Enabled Profiles (MEP)
-	 * https://source.android.com/docs/core/connect/esim-mep */
-	if (SCARD_CTL_CODE(3600) == dwControlCode)
-	{
-		DEBUG_INFO1("Control command for MEP");
-
-		if (CCID_CLASS_TPDU != (ccid_descriptor->dwFeatures & CCID_CLASS_EXCHANGE_MASK))
-		{
-			DEBUG_INFO1("Reader is NOT in TPDU mode");
-			return_value = IFD_NOT_SUPPORTED;
-		}
-		else
-		{
-			/* Set T=1 NAD */
-			if (TxLength == 4
-				&& (TxBuffer[0] == 0x3E)
-				&& (TxBuffer[1] == 0x00)
-				&& (TxBuffer[2] == 0x01))
-			{
-				RxBuffer[0] = 0x3E;
-				RxBuffer[1] = 0x00;
-				RxBuffer[2] = 0x01;
-				DEBUG_INFO1("Set NAD value");
-				if (t1_set_param(&CcidSlots[reader_index].t1, IFD_PROTOCOL_T1_NAD,
-					TxBuffer[3]))
-					/* error */
-					RxBuffer[3] = 0x01;
-				else
-					RxBuffer[3] = 0x00;
-				*pdwBytesReturned = 4;
-				return_value = IFD_SUCCESS;
-			}
-
-			/* Get T=1 NAD */
-			if (TxLength == 3
-				&& (TxBuffer[0] == 0x3F)
-				&& (TxBuffer[1] == 0x00)
-				&& (TxBuffer[2] == 0x00))
-			{
-				int value = 0;
-
-				RxBuffer[0] = 0x3F;
-				RxBuffer[1] = 0x00;
-				RxBuffer[2] = 0x02;
-				DEBUG_INFO1("Get NAD value");
-				value = t1_get_param(&CcidSlots[reader_index].t1,
-					IFD_PROTOCOL_T1_NAD);
-				if (-1 == value)
-				{
-					/* error */
-					RxBuffer[3] = 0x01;
-					RxBuffer[4] = 0x00;
-				}
-				else
-				{
-					RxBuffer[3] = 0x00;
-					RxBuffer[4] = value;
-				}
-				*pdwBytesReturned = 5;
-				return_value = IFD_SUCCESS;
-			}
-		}
-	}
-#endif
-
 	if (IFD_SUCCESS != return_value)
 		*pdwBytesReturned = 0;
 
@@ -1983,15 +1551,6 @@ EXTERNAL RESPONSECODE IFDHICCPresence(DWORD Lun)
 	DEBUG_PERIODIC3(LOG_STRING " (lun: " DWORD_X ")", CcidSlots[reader_index].readerName, Lun);
 
 	ccid_descriptor = get_ccid_descriptor(reader_index);
-
-	if ((GEMCORESIMPRO == ccid_descriptor->readerID)
-		&& (ccid_descriptor->IFD_bcdDevice < 0x0200))
-	{
-		/* GemCore SIM Pro firmware 2.00 and up features
-		 * a full independent second slot */
-		return_value = ccid_descriptor->dwSlotStatus;
-		goto end;
-	}
 
 	/* save the current read timeout computed from card capabilities */
 	oldReadTimeout = ccid_descriptor->readTimeout;
@@ -2056,55 +1615,6 @@ EXTERNAL RESPONSECODE IFDHICCPresence(DWORD Lun)
 			break;
 	}
 
-#if 0
-	/* SCR331-DI contactless reader */
-	if (((SCR331DI == ccid_descriptor->readerID)
-		|| (SDI010 == ccid_descriptor->readerID)
-		|| (SCR331DINTTCOM == ccid_descriptor->readerID))
-		&& (ccid_descriptor->bCurrentSlotIndex > 0))
-	{
-		unsigned char cmd[] = { 0x11 };
-		/*  command: 11 ??
-		 * response: 00 11 01 ?? no card
-		 *           01 04 00 ?? card present */
-
-		unsigned char res[10];
-		unsigned int length_res = sizeof(res);
-		RESPONSECODE ret;
-
-		/* if DEBUG_LEVEL_PERIODIC is not set we remove DEBUG_LEVEL_COMM */
-		oldLogLevel = LogLevel;
-		if (! (LogLevel & DEBUG_LEVEL_PERIODIC))
-			LogLevel &= ~DEBUG_LEVEL_COMM;
-
-		ret = CmdEscape(reader_index, cmd, sizeof(cmd), res, &length_res, 0);
-
-		/* set back the old LogLevel */
-		LogLevel = oldLogLevel;
-
-		if (ret != IFD_SUCCESS)
-		{
-			DEBUG_INFO1("CmdEscape failed");
-			/* simulate a card absent */
-			res[0] = 0;
-		}
-
-		if (0x01 == res[0])
-			return_value = IFD_ICC_PRESENT;
-		else
-		{
-			/* Reset ATR buffer */
-			CcidSlots[reader_index].nATRLength = 0;
-			*CcidSlots[reader_index].pcATRBuffer = '\0';
-
-			/* Reset PowerFlags */
-			CcidSlots[reader_index].bPowerFlags = POWERFLAGS_RAZ;
-
-			return_value = IFD_ICC_NOT_PRESENT;
-		}
-	}
-#endif
-
 end:
 	DEBUG_PERIODIC2("Card " LOG_STRING,
 		IFD_ICC_PRESENT == return_value ? "present" : "absent");
@@ -2130,7 +1640,7 @@ void init_driver(void)
 	DEBUG_INFO1("Driver version: " VERSION);
 
 	/* Check if path override present in environment */
-	hpDirPath = SYS_GetEnv("PCSCLITE_HP_DROPDIR");
+	hpDirPath = secure_getenv("PCSCLITE_HP_DROPDIR");
 	if (NULL == hpDirPath)
 		hpDirPath = PCSCLITE_HP_DROPDIR;
 

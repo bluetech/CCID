@@ -40,45 +40,12 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * see http://gcc.gnu.org/onlinedocs/gcc-3.3.5/gcc/Function-Attributes.html#Function-Attributes
  * see http://www.nedprod.com/programs/gccvisibility.html
  */
-#if defined(__GNUC__) && \
-	(__GNUC__ >= 4 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 3)) || \
-	defined(__SUNPRO_C) && __SUNPRO_C >= 0x590
 #define INTERNAL __attribute__ ((visibility("hidden")))
-#ifndef PCSC_API
-#define PCSC_API __attribute__ ((visibility("default")))
-#endif
-#elif defined(__SUNPRO_C) && __SUNPRO_C >= 0x550
-/* http://wikis.sun.com/display/SunStudio/Macros+for+Shared+Library+Symbol+Visibility */
-#define INTERNAL __hidden
-#define PCSC_API __global
-#else
-#define INTERNAL
-#define PCSC_API
-#endif
-#define EXTERNAL PCSC_API
-
-#if defined __GNUC__
+#define EXTERNAL __attribute__ ((visibility("default")))
 
 /* GNU Compiler Collection (GCC) */
 #define CONSTRUCTOR __attribute__ ((constructor))
 #define DESTRUCTOR __attribute__ ((destructor))
-
-#else
-
-/* SUN C compiler does not use __attribute__ but #pragma init (function)
- * We can't use a # inside a #define so it is not possible to use
- * #define CONSTRUCTOR_DECLARATION(x) #pragma init (x)
- * The #pragma is used directly where needed */
-
-/* any other */
-#define CONSTRUCTOR
-#define DESTRUCTOR
-
-#endif
-
-#ifndef min
-#define min(a,b) (((a) < (b)) ? (a) : (b))
-#endif
 
 #ifndef COUNT_OF
 #define COUNT_OF(arr) (sizeof(arr)/sizeof(arr[0]))

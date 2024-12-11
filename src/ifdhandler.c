@@ -113,6 +113,9 @@ static RESPONSECODE CreateChannelByNameOrChannel(DWORD Lun,
 	/* Reset PowerFlags */
 	CcidSlots[reader_index].bPowerFlags = POWERFLAGS_RAZ;
 
+	/* Reset bStatusFromPolling */
+	CcidSlots[reader_index].statusFromPolling = STATUS_FROM_POLLING_NONE;
+
 	/* reader name */
 	if (lpcDevice)
 		CcidSlots[reader_index].readerName = strdup(lpcDevice);
@@ -296,7 +299,21 @@ static RESPONSECODE IFDHPolling(DWORD Lun, int timeout)
 		DEBUG_INFO4(LOG_STRING " (lun: " DWORD_X ") %d ms",
 			CcidSlots[reader_index].readerName, Lun, timeout);
 
-	return InterruptRead(reader_index, timeout);
+	struct notification notification;
+	int return_value;
+	return_value = InterruptRead(reader_index, timeout, &notification);
+	if (return_value != IFD_SUCCESS)
+	{
+		return return_value;
+	}
+	if (notification.messageType == CCID_MESSAGE_TYPE_RDR_to_PC_NotifySlotChange)
+	{
+		if ((notification.slotICCState & 0x01) == 0)
+			CcidSlots[reader_index].statusFromPolling = STATUS_FROM_POLLING_NOT_PRESENT;
+		else
+			CcidSlots[reader_index].statusFromPolling = STATUS_FROM_POLLING_PRESENT;
+	}
+	return IFD_SUCCESS;
 }
 
 /* on an ICCD device the card is always inserted
@@ -1993,58 +2010,82 @@ EXTERNAL RESPONSECODE IFDHICCPresence(DWORD Lun)
 		goto end;
 	}
 
-	/* save the current read timeout computed from card capabilities */
-	oldReadTimeout = ccid_descriptor->readTimeout;
-
-	/* use default timeout since the reader may not be present anymore */
-	ccid_descriptor->readTimeout = DEFAULT_COM_READ_TIMEOUT;
-
-	/* if DEBUG_LEVEL_PERIODIC is not set we remove DEBUG_LEVEL_COMM */
-	oldLogLevel = LogLevel;
-	if (! (LogLevel & DEBUG_LEVEL_PERIODIC))
-		LogLevel &= ~DEBUG_LEVEL_COMM;
-
-	return_value = CmdGetSlotStatus(reader_index, pcbuffer);
-
-	/* set back the old timeout */
-	ccid_descriptor->readTimeout = oldReadTimeout;
-
-	/* set back the old LogLevel */
-	LogLevel = oldLogLevel;
-
-	if (IFD_NO_SUCH_DEVICE == return_value)
+	switch (CcidSlots[reader_index].statusFromPolling)
 	{
-		return_value = IFD_ICC_NOT_PRESENT;
-		goto end;
-	}
+		case STATUS_FROM_POLLING_NONE: {
+			/* No status from polling, need to ask the CCID for the status. */
 
-	if (return_value != IFD_SUCCESS)
-		return return_value;
+			/* save the current read timeout computed from card capabilities */
+			oldReadTimeout = ccid_descriptor->readTimeout;
 
-	return_value = IFD_COMMUNICATION_ERROR;
-	switch (pcbuffer[7] & CCID_ICC_STATUS_MASK)	/* bStatus */
-	{
-		case CCID_ICC_PRESENT_ACTIVE:
-			return_value = IFD_ICC_PRESENT;
-			/* use default slot */
-			break;
+			/* use default timeout since the reader may not be present anymore */
+			ccid_descriptor->readTimeout = DEFAULT_COM_READ_TIMEOUT;
 
-		case CCID_ICC_PRESENT_INACTIVE:
-			if ((CcidSlots[reader_index].bPowerFlags == POWERFLAGS_RAZ)
-				|| (CcidSlots[reader_index].bPowerFlags & MASK_POWERFLAGS_PDWN))
-				/* the card was previously absent */
-				return_value = IFD_ICC_PRESENT;
-			else
+			/* if DEBUG_LEVEL_PERIODIC is not set we remove DEBUG_LEVEL_COMM */
+			oldLogLevel = LogLevel;
+			if (! (LogLevel & DEBUG_LEVEL_PERIODIC))
+				LogLevel &= ~DEBUG_LEVEL_COMM;
+
+			return_value = CmdGetSlotStatus(reader_index, pcbuffer);
+
+			/* set back the old timeout */
+			ccid_descriptor->readTimeout = oldReadTimeout;
+
+			/* set back the old LogLevel */
+			LogLevel = oldLogLevel;
+
+			if (IFD_NO_SUCH_DEVICE == return_value)
 			{
-				/* the card was previously present but has been
-				 * removed and inserted between two consecutive
-				 * IFDHICCPresence() calls */
-				CcidSlots[reader_index].bPowerFlags = POWERFLAGS_RAZ;
 				return_value = IFD_ICC_NOT_PRESENT;
+				goto end;
 			}
+
+			if (return_value != IFD_SUCCESS)
+				return return_value;
+
+			return_value = IFD_COMMUNICATION_ERROR;
+			switch (pcbuffer[7] & CCID_ICC_STATUS_MASK)     /* bStatus */
+			{
+				case CCID_ICC_PRESENT_ACTIVE:
+					return_value = IFD_ICC_PRESENT;
+					/* use default slot */
+					break;
+
+				case CCID_ICC_PRESENT_INACTIVE:
+					if ((CcidSlots[reader_index].bPowerFlags == POWERFLAGS_RAZ)
+						|| (CcidSlots[reader_index].bPowerFlags & MASK_POWERFLAGS_PDWN))
+						/* the card was previously absent */
+						return_value = IFD_ICC_PRESENT;
+					else
+					{
+						/* the card was previously present but has been
+						 * removed and inserted between two consecutive
+						 * IFDHICCPresence() calls */
+						CcidSlots[reader_index].bPowerFlags = POWERFLAGS_RAZ;
+						return_value = IFD_ICC_NOT_PRESENT;
+					}
+					break;
+
+				case CCID_ICC_ABSENT:
+					/* Reset ATR buffer */
+					CcidSlots[reader_index].nATRLength = 0;
+					*CcidSlots[reader_index].pcATRBuffer = '\0';
+
+					/* Reset PowerFlags */
+					CcidSlots[reader_index].bPowerFlags = POWERFLAGS_RAZ;
+
+					return_value = IFD_ICC_NOT_PRESENT;
+					break;
+			}
+
+			break;
+		}
+
+		case STATUS_FROM_POLLING_PRESENT:
+			return_value = IFD_ICC_PRESENT;
 			break;
 
-		case CCID_ICC_ABSENT:
+		case STATUS_FROM_POLLING_NOT_PRESENT:
 			/* Reset ATR buffer */
 			CcidSlots[reader_index].nATRLength = 0;
 			*CcidSlots[reader_index].pcATRBuffer = '\0';

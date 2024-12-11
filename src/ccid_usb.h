@@ -44,6 +44,25 @@ uint8_t get_ccid_usb_device_address(int reader_index);
 int ControlUSB(int reader_index, int requesttype, int request, int value,
 	unsigned char *bytes, unsigned int size);
 
-int InterruptRead(int reader_index, int timeout);
+/* A notification (interrupt) received from the CCID. */
+struct notification {
+    /*
+     * The notification type.
+     * Standard CCID notifications:
+     * - RDR_to_PC_NotifySlotChange
+     * - RDR_to_PC_HardwareError
+     * On timeout/error, set to 0x00.
+     */
+    unsigned char messageType;
+    /*
+     * If RDR_to_PC_NotifySlotChange, the bmSlotICCState value *for the specific
+     * slot*:
+     * Bit 0: Slot current state - 0b = no ICC present, 1b = ICC present.
+     * Bit 1: Slot changed status - 0b = no change, 1b = change.
+     */
+    unsigned char slotICCState;
+};
+
+int InterruptRead(int reader_index, int timeout /* in ms */, struct notification *out);
 void InterruptStop(int reader_index);
 #endif

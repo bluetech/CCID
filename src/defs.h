@@ -23,6 +23,12 @@
 
 #include "openct/proto-t1.h"
 
+typedef enum {
+	STATUS_FROM_POLLING_NONE = 0,
+	STATUS_FROM_POLLING_PRESENT = 1,
+	STATUS_FROM_POLLING_NOT_PRESENT = 2,
+} status_from_polling_t ;
+
 typedef struct CCID_DESC
 {
 	/*
@@ -35,6 +41,11 @@ typedef struct CCID_DESC
 	 * Card state
 	 */
 	unsigned char bPowerFlags;
+
+	/*
+	 * Latest status from polling
+	 */
+	status_from_polling_t statusFromPolling;
 
 	/*
 	 * T=1 Protocol context

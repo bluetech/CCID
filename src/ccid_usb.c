@@ -129,7 +129,7 @@ typedef struct
 #include "ccid_usb.h"
 
 /* Specific hooks for multislot readers */
-static int Multi_InterruptRead(int reader_index, int timeout /* in ms */);
+static int Multi_InterruptRead(int reader_index, int timeout /* in ms */, struct notification *out);
 static void Multi_InterruptStop(int reader_index);
 static struct usbDevice_MultiSlot_Extension *Multi_CreateFirstSlot(int reader_index);
 static struct usbDevice_MultiSlot_Extension *Multi_CreateNextSlot(int physical_reader_index);
@@ -1544,7 +1544,7 @@ static void bulk_transfer_cb(struct libusb_transfer *transfer)
  *					InterruptRead
  *
  ****************************************************************************/
-int InterruptRead(int reader_index, int timeout /* in ms */)
+int InterruptRead(int reader_index, int timeout /* in ms */, struct notification *out)
 {
 	int ret, actual_length;
 	int return_value = IFD_SUCCESS;
@@ -1554,9 +1554,12 @@ int InterruptRead(int reader_index, int timeout /* in ms */)
 
 	/* Multislot reader: redirect to Multi_InterrupRead */
 	if (usbDevice[reader_index].multislot_extension != NULL)
-		return Multi_InterruptRead(reader_index, timeout);
+		return Multi_InterruptRead(reader_index, timeout, out);
 
 	DEBUG_PERIODIC3("before (%d), timeout: %d ms", reader_index, timeout);
+
+	if (out != NULL)
+		out->messageType = 0x00; /* No notification */
 
 	transfer = libusb_alloc_transfer(0);
 	if (NULL == transfer)
@@ -1622,10 +1625,14 @@ int InterruptRead(int reader_index, int timeout /* in ms */)
 		case LIBUSB_TRANSFER_COMPLETED:
 			if (actual_length > 0)
 			{
+				if (out)
+					out->messageType = buffer[0];
 				switch (buffer[0])
 				{
 					case CCID_MESSAGE_TYPE_RDR_to_PC_NotifySlotChange:
 						DEBUG_XXD("NotifySlotChange: ", buffer, actual_length);
+						if (out)
+							out->slotICCState = buffer[1] & 0x03;
 						break;
 					case CCID_MESSAGE_TYPE_RDR_to_PC_HardwareError:
 						DEBUG_XXD("HardwareError: ", buffer, actual_length);
@@ -1920,14 +1927,17 @@ static void Multi_PollingTerminate(struct usbDevice_MultiSlot_Extension *msExt)
  *					Multi_InterruptRead
  *
  ****************************************************************************/
-static int Multi_InterruptRead(int reader_index, int timeout /* in ms */)
+static int Multi_InterruptRead(int reader_index, int timeout /* in ms */, struct notification *out)
 {
 	struct usbDevice_MultiSlot_Extension *msExt;
 	unsigned char buffer[CCID_INTERRUPT_SIZE];
 	struct timespec cond_wait_until;
-	int rv, status, interrupt_byte, interrupt_mask;
+	int rv, status, interrupt_byte, interrupt_shift, interrupt_mask;
 
 	msExt = usbDevice[reader_index].multislot_extension;
+
+	if (out != NULL)
+		out->messageType = 0x00; /* No notification */
 
 	/* When stopped, returns IFD_NO_SUCH_DEVICE */
 	if ((msExt == NULL) || msExt->terminated)
@@ -1938,7 +1948,8 @@ static int Multi_InterruptRead(int reader_index, int timeout /* in ms */)
 
 	/* Select the relevant bit in the interrupt buffer */
 	interrupt_byte = (usbDevice[reader_index].ccid.bCurrentSlotIndex / 4) + 1;
-	interrupt_mask = 0x02 << (2 * (usbDevice[reader_index].ccid.bCurrentSlotIndex % 4));
+	interrupt_shift = 2 * (usbDevice[reader_index].ccid.bCurrentSlotIndex % 4);
+	interrupt_mask = 0x02 << interrupt_shift;
 
 	/* Wait until the condition is signaled or a timeout occurs */
 #ifdef HAVE_PTHREAD_CONDATTR_SETCLOCK
@@ -1983,6 +1994,11 @@ again:
 			DEBUG_PERIODIC2("Multi_InterruptRead (%d) -- skipped",
 				reader_index);
 			goto again;
+		}
+		if (out)
+		{
+			out->messageType = CCID_MESSAGE_TYPE_RDR_to_PC_NotifySlotChange;
+			out->slotICCState = (buffer[interrupt_byte] & interrupt_mask) >> interrupt_shift;
 		}
 		DEBUG_PERIODIC2("Multi_InterruptRead (%d), got an interrupt",
 			reader_index);

@@ -134,7 +134,7 @@ int ccid_open_hack_pre(unsigned int reader_index)
 	{
 #ifndef TWIN_SERIAL
 		/* just wait for 100ms in case a notification is in the pipe */
-		(void)InterruptRead(reader_index, 100);
+		(void)InterruptRead(reader_index, 100, NULL);
 #endif
 	}
 

@@ -88,7 +88,7 @@ RESPONSECODE CmdPowerOn(unsigned int reader_index, unsigned int * nlength,
 	unsigned char buffer[], int voltage)
 {
 	unsigned char cmd[10];
-	unsigned char resp[10 + MAX_ATR_SIZE];
+	unsigned char resp[128];
 	int bSeq;
 	status_t res;
 	int count = 1;
@@ -1131,8 +1131,9 @@ RESPONSECODE CmdPowerOff(unsigned int reader_index)
 	res = WritePort(reader_index, sizeof(cmd), cmd);
 	CHECK_STATUS(res)
 
-	length = sizeof(cmd);
-	res = ReadPort(reader_index, &length, cmd, bSeq);
+	unsigned char resp[64];
+	length = sizeof(resp);
+	res = ReadPort(reader_index, &length, resp, bSeq);
 	CHECK_STATUS(res)
 
 	if (length < CCID_RESPONSE_HEADER_SIZE)
@@ -1141,9 +1142,9 @@ RESPONSECODE CmdPowerOff(unsigned int reader_index)
 		return IFD_COMMUNICATION_ERROR;
 	}
 
-	if (cmd[STATUS_OFFSET] & CCID_COMMAND_FAILED)
+	if (resp[STATUS_OFFSET] & CCID_COMMAND_FAILED)
 	{
-		ccid_error(PCSC_LOG_ERROR, cmd[ERROR_OFFSET], __FILE__, __LINE__, __FUNCTION__);	/* bError */
+		ccid_error(PCSC_LOG_ERROR, resp[ERROR_OFFSET], __FILE__, __LINE__, __FUNCTION__);	/* bError */
 		return_value = IFD_COMMUNICATION_ERROR;
 	}
 

@@ -9,7 +9,7 @@ SUBSYSTEM!="usb", GOTO="pcscd_ccid_rules_end"
 ENV{DEVTYPE}!="usb_device", GOTO="pcscd_ccid_rules_end"
 
 # Generic CCID device (bInterfaceClass = 0x0b)
-ENV{ID_USB_INTERFACES}=="*:0b????:*", GROUP="pcscd"
+ENV{ID_USB_INTERFACES}=="*:0b0000:*", GROUP="pcscd"
 
 # Non CCID generic (InterfaceClass: 0xFF)
 # CherrySmartTerminalST2XXX.txt
@@ -76,7 +76,7 @@ ATTR{idVendor}=="058f", ATTR{idProduct}=="9520", GOTO="pcscd_ccid_rules_end"
 
 
 # set USB power management to auto.
-ENV{ID_USB_INTERFACES}==":0b????:", TEST=="power/control", ATTR{power/control}="auto"
+ENV{ID_USB_INTERFACES}=="*:0b0000:*", TEST=="power/control", ATTR{power/control}="auto"
 
 # All done
 LABEL="pcscd_ccid_rules_end"
